@@ -3,8 +3,6 @@ import math
 import signal
 import time
 import jax
-import mujoco
-import mujoco.viewer
 import visualize
 import numpy as np
 import rerun as rr
@@ -17,30 +15,28 @@ from sim.vehicle.dynamics import (
 )
 from sim.vehicle.state import derive_vehicle_state
 from sim.comms import SimComms
-from sim.world import World
+from sim.scene import load_scene, MOUNT_FWD, SENSOR_Z
 from sim.lidar import LidarSensor
+from sim import render
 from sim.proto import load_can, load_proto
 
-VIEWER_HZ: float = 60.0
-LIDAR_HZ: float = 20.0
+LIDAR_HZ: float = 10.0
+VIS_HZ: float = 60.0
 CONES_HZ: float = 1.0  # static ground truth map
 CAN_TAG: int = 268  # must match the HT_CAN release drivebrain is built against
 
 def parse_args():
     p: argparse.ArgumentParser = argparse.ArgumentParser()
     p.add_argument("--track", default="FSG", choices=["FSG", "FSI", "skidpad", "acceleration", "thin"])
-    p.add_argument("--logless", action="store_true", help="Disable Rerun time-series")
-    p.add_argument("--headless", action="store_true", help="Disable MuJoCo viewer")
+    p.add_argument("--logless", action="store_true", help="Disable Rerun (headless)")
     return p.parse_args()
 
 def main():
-    """
-    """
     args = parse_args()
     params: VehicleParams = VehicleParams()
-    dt: float = 0.002
+    dt: float = 0.004
 
-    vis_rate: int = max(1, round(1.0 / (VIEWER_HZ * dt)))
+    vis_rate: int = max(1, round(1.0 / (VIS_HZ * dt)))
     lidar_rate: int = max(1, round(1.0 / (LIDAR_HZ * dt)))
     cones_rate: int = max(1, round(1.0 / (CONES_HZ * dt)))
 
@@ -48,29 +44,22 @@ def main():
     u0 = dynamics.input()
     step_rk4(s0, u0, params, dt).block_until_ready()
 
-    world: World = World(args.track)
-    lidar: LidarSensor = LidarSensor(world)
+    scene = load_scene(args.track)
+    lidar: LidarSensor = LidarSensor(scene)
     proto = load_proto()
     can = load_can(CAN_TAG)
 
-    x0: float
-    y0: float
-    psi0: float
-    x0, y0, psi0 = [float(v) for v in world.start_pose]
+    cone_xy: np.ndarray = np.asarray(scene.cone_xy)
+    cone_type: np.ndarray = np.asarray(scene.cone_type)
+
+    x0, y0, psi0 = [float(v) for v in scene.start_pose]
     state = dynamics.state(x=x0, y=y0, psi=psi0)
-    world.set_car_pose(x0, y0, psi0)
 
     if not args.logless:
         rr.init("vehicle_sim", spawn=True)
-        visualize.setup_static(world)
+        render.setup_static(scene)
+        visualize.setup_series()
         rr.send_blueprint(visualize.blueprint())
-
-    viewer = None
-    if not args.headless:
-        viewer = mujoco.viewer.launch_passive(world.model, world.data)
-        viewer.cam.lookat[:] = [x0, y0, 0.5]
-        viewer.cam.distance = 20.0
-        viewer.cam.elevation = -25.0
 
     comms: SimComms = SimComms(proto, can)
     running: bool = True
@@ -87,7 +76,7 @@ def main():
     wall_start: float = time.perf_counter()
     latest_pts: np.ndarray = np.empty((0, 3), dtype=np.float32)
 
-    while running and (viewer is None or viewer.is_running()):
+    while running:
         comms.drain_commands()
         cmd = comms.current_input()
 
@@ -105,40 +94,36 @@ def main():
         y_i: float = float(state[Y])
         psi_i: float = float(state[PSI])
 
-        world.set_car_pose(x_i, y_i, psi_i)
         # comms.send_state(derive_vehicle_state(state, u, params))  # raw packed struct replaced by typed GT messages below
 
         if step_i % lidar_rate == 0:
-            latest_pts, latest_rgba = lidar.scan()
-            comms.send_pointcloud(latest_pts, latest_rgba)
+            latest_pts = lidar.scan((x_i, y_i, psi_i))
+            comms.send_pointcloud(latest_pts)
             comms.send_pose(x_i, y_i, psi_i)
-            # transform carries the lidar SITE pose — same mount math as visualize.log_frame
             comms.send_transform(
-                x_i + visualize.LIDAR_FWD * math.cos(psi_i),
-                y_i + visualize.LIDAR_FWD * math.sin(psi_i),
-                visualize.CAR_Z + visualize.LIDAR_UP,
+                x_i + MOUNT_FWD * math.cos(psi_i),
+                y_i + MOUNT_FWD * math.sin(psi_i),
+                SENSOR_Z,
                 psi_i,
             )
+            if not args.logless:
+                rr.set_time("sim_time", duration=sim_t)
+                render.log_points(latest_pts)
 
         if step_i % cones_rate == 0:
-            comms.send_cones(world.cones_left, world.cones_right)
+            comms.send_cones(cone_xy, cone_type)
 
-        if step_i % vis_rate == 0:
-            if viewer is not None:
-                viewer.sync()
-            if not args.logless:
-                visualize.log_frame(
-                    sim_t=sim_t,
-                    x=x_i, y=y_i, psi=psi_i,
-                    pts_local=latest_pts,
-                    speed=math.hypot(float(state[VX]), float(state[VY])),
-                    yaw_rate=float(state[OMEGA]),
-                    slip=float(slip_angle(state)),
-                    torque_fl=cmd.torque_fl, torque_fr=cmd.torque_fr,
-                    torque_rl=cmd.torque_rl, torque_rr=cmd.torque_rr,
-                    steering=cmd.wheel_steer_rad,
-                    cmd_timed_out=comms.timed_out(),
-                )
+        if step_i % vis_rate == 0 and not args.logless:
+            rr.set_time("sim_time", duration=sim_t)
+            render.log_car(x_i, y_i, psi_i, comms.timed_out())
+            visualize.log_scalars(
+                speed=math.hypot(float(state[VX]), float(state[VY])),
+                yaw_rate=float(state[OMEGA]),
+                slip=float(slip_angle(state)),
+                torque_fl=cmd.torque_fl, torque_fr=cmd.torque_fr,
+                torque_rl=cmd.torque_rl, torque_rr=cmd.torque_rr,
+                steering=cmd.wheel_steer_rad,
+            )
 
         drift: float = (wall_start + sim_t) - time.perf_counter()
         if drift > 0:

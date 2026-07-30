@@ -18,11 +18,8 @@ LIDAR_SOCKET_PORT: int = 1155
 
 INPUT_TIMEOUT: float = 1.0 # secs
 
-POINT_DTYPE = np.dtype([
-    ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
-    ('r', 'u1'), ('g', 'u1'), ('b', 'u1'), ('a', 'u1'),
-])
-POINT_STRIDE: int = POINT_DTYPE.itemsize  # 16
+POINT_DTYPE = np.dtype([('x', '<f4'), ('y', '<f4'), ('z', '<f4')])
+POINT_STRIDE: int = POINT_DTYPE.itemsize  # 12
 
 class SimComms:
     def __init__(self, proto: types.ModuleType, can: types.ModuleType) -> None:
@@ -30,19 +27,26 @@ class SimComms:
         self._can = can
         self._ctx: zmq.Context = zmq.Context()
 
+        # NOTE: socket options must be set BEFORE bind() to apply to every pipe a
+        # peer opens; setting them after leaves an early-connecting consumer on the
+        # 1000-deep default queue, which is exactly how a backlog builds.
         self._cmd: zmq.Socket = self._ctx.socket(zmq.PULL)
-        self._cmd.bind(f"{ZMQ_PREFIX}{RECV_SOCKET_PORT}")
         self._cmd.setsockopt(zmq.RCVHWM, 1)
+        self._cmd.bind(f"{ZMQ_PREFIX}{RECV_SOCKET_PORT}")
 
-        # multipart channel. carries all low-rate ground-truth data (pose, cones, transforms)
+        # multipart channel. carries all low-rate ground-truth data (pose, cones, transforms).
+        # multipart rules out CONFLATE, so keep the queue shallow to bound transform staleness.
         self._state: zmq.Socket = self._ctx.socket(zmq.PUSH)
+        self._state.setsockopt(zmq.SNDHWM, 4)
+        self._state.setsockopt(zmq.LINGER, 0)
         self._state.bind(f"{ZMQ_PREFIX}{SEND_SOCKET_PORT}")
-        self._state.setsockopt(zmq.SNDHWM, 10)
 
+        # lidar is single-part and only-latest-matters -> CONFLATE keeps just the newest
+        # scan queued, so a slow Foxglove/bridge can never accumulate stale clouds.
         self._lidar: zmq.Socket = self._ctx.socket(zmq.PUSH)
-
+        self._lidar.setsockopt(zmq.CONFLATE, 1)
+        self._lidar.setsockopt(zmq.LINGER, 0)
         self._lidar.bind(f"{ZMQ_PREFIX}{LIDAR_SOCKET_PORT}")
-        self._lidar.setsockopt(zmq.SNDHWM, 1)
 
         self._latest_input: VehicleInput = VehicleInput()
         self._last_cmd_time: float = time.monotonic()
@@ -102,28 +106,20 @@ class SimComms:
         msg.orientation.w = math.cos(psi * 0.5)
         self._send_typed(msg)
 
-    def send_pointcloud(self, pts: np.ndarray, rgba: np.ndarray) -> None:
+    def send_pointcloud(self, pts: np.ndarray) -> None:
         n: int = len(pts)
         buf = np.empty(n, dtype=POINT_DTYPE)
         buf['x'] = pts[:, 0]
         buf['y'] = pts[:, 1]
         buf['z'] = pts[:, 2]
-        buf['r'] = rgba[:, 0]
-        buf['g'] = rgba[:, 1]
-        buf['b'] = rgba[:, 2]
-        buf['a'] = rgba[:, 3]
 
         PEF = PackedElementField
         msg = PointCloud(
             frame_id="lidar",
             point_stride=POINT_STRIDE,
-            fields=[PEF(name="x", offset=0,  type=PEF.FLOAT32),
-                    PEF(name="y", offset=4,  type=PEF.FLOAT32),
-                    PEF(name="z", offset=8,  type=PEF.FLOAT32),
-                    PEF(name="red", offset=12, type=PEF.UINT8),
-                    PEF(name="green", offset=13, type=PEF.UINT8),
-                    PEF(name="blue", offset=14, type=PEF.UINT8),
-                    PEF(name="alpha", offset=15, type=PEF.UINT8),
+            fields=[PEF(name="x", offset=0, type=PEF.FLOAT32),
+                    PEF(name="y", offset=4, type=PEF.FLOAT32),
+                    PEF(name="z", offset=8, type=PEF.FLOAT32),
             ],
             data=buf.tobytes(),
         )
@@ -135,23 +131,18 @@ class SimComms:
         except zmq.Again:
             pass
 
-    def send_cones(self, cones_left: list[list[float]], cones_right: list[list[float]]) -> None:
-        """Ground-truth track map. left = blue, right = yellow"""
+    def send_cones(self, cone_xy: np.ndarray, cone_type: np.ndarray) -> None:
+        """Ground-truth track map. cone_type maps 1:1 to dv_msgs Cones.ConeColor."""
         msg = self._proto.dv_msgs_pb2.Cones(timestamp_us=int(time.time() * 1e6))
-        for xy in cones_left:
+        for (x, y), c in zip(cone_xy, cone_type):
             cone = msg.cones.add()
-            cone.position.x = xy[0]
-            cone.position.y = xy[1]
-            cone.color = self._proto.dv_msgs_pb2.Cones.BLUE
-        for xy in cones_right:
-            cone = msg.cones.add()
-            cone.position.x = xy[0]
-            cone.position.y = xy[1]
-            cone.color = self._proto.dv_msgs_pb2.Cones.YELLOW
+            cone.position.x = float(x)
+            cone.position.y = float(y)
+            cone.color = int(c)
         self._send_typed(msg)
 
     def send_transform(self, x: float, y: float, z: float, psi: float) -> None:
-        """map -> lidar transform: pose of the LIDAR SITE (car pose + mount offset), not the car origin."""
+        """map -> lidar transform"""
         msg = FrameTransform(parent_frame_id="map", child_frame_id="lidar")
         msg.timestamp.GetCurrentTime()
         msg.translation.x = x

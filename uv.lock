@@ -104,13 +104,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/3d/589663aeeacd59bb2f3e8596bfd3e81cf0fb18d70bb433199041f469771b/etils-1.14.0-py3-none-any.whl", hash = "sha256:b5df7341f54dbe1405a4450b2741207b4a8c279780402b45f87202b94dfc52b4", size = 172934, upload-time = "2026-03-04T17:41:35.01Z" },
 ]
 
-[package.optional-dependencies]
-epath = [
-    { name = "fsspec" },
-    { name = "typing-extensions" },
-    { name = "zipp" },
-]
-
 [[package]]
 name = "evdev"
 version = "1.9.3"
@@ -343,43 +336,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/79/2b/a826ba18d2179a56e144aef69e57fb2ab7c464ef0b2111940ee8a3a223a2/ml_dtypes-0.5.4-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0d2ffd05a2575b1519dc928c0b93c06339eb67173ff53acb00724502cda231cf", size = 5366332, upload-time = "2025-11-17T22:32:21.193Z" },
     { url = "https://files.pythonhosted.org/packages/84/44/f4d18446eacb20ea11e82f133ea8f86e2bf2891785b67d9da8d0ab0ef525/ml_dtypes-0.5.4-cp314-cp314t-win_amd64.whl", hash = "sha256:4381fe2f2452a2d7589689693d3162e876b3ddb0a832cde7a414f8e1adf7eab1", size = 236612, upload-time = "2025-11-17T22:32:22.579Z" },
     { url = "https://files.pythonhosted.org/packages/ad/3f/3d42e9a78fe5edf792a83c074b13b9b770092a4fbf3462872f4303135f09/ml_dtypes-0.5.4-cp314-cp314t-win_arm64.whl", hash = "sha256:11942cbf2cf92157db91e5022633c0d9474d4dfd813a909383bd23ce828a4b7d", size = 168825, upload-time = "2025-11-17T22:32:23.766Z" },
-]
-
-[[package]]
-name = "mujoco"
-version = "3.9.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "absl-py" },
-    { name = "etils", extra = ["epath"] },
-    { name = "glfw" },
-    { name = "numpy" },
-    { name = "pyopengl" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/f6/325fa0c1a1d63b1bb6852e265fb8d7fd8a88ddcd3580dc153e1dceb197dd/mujoco-3.9.0.tar.gz", hash = "sha256:0a1ca878c4a80893251420037a0583252d1356a0cc8d661268627c674c7835f7", size = 923500, upload-time = "2026-05-27T14:49:48.52Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/6f/0ce33544e068183e053d88d18d14c77f0b98afa0347e830ad546e647b2df/mujoco-3.9.0-cp314-cp314-macosx_10_16_x86_64.whl", hash = "sha256:4395896d56618d5020cf694e749e13946ef27023d611aa0066cd2477956d3f63", size = 7523973, upload-time = "2026-05-27T14:49:39.427Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/96/c17b8b1d81dd8be2e74e1831e409bea0e6503855be6e6d4367c57d671465/mujoco-3.9.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:2f65ccdc6fe3027d27cc00761b761c8914bb3701d1a5a9e202aedda8151819f4", size = 7503471, upload-time = "2026-05-27T14:49:41.436Z" },
-    { url = "https://files.pythonhosted.org/packages/41/b0/ce0e6431338d68cb54a7d5f1ac050521203b261d047315afb02ccf395469/mujoco-3.9.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:46182fce59757da66970b4573363f7442e1c8afeb43c4d61f28ef9718982e0e7", size = 6858506, upload-time = "2026-05-27T14:49:43.067Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/10/d3574267555b9923e88443b4524bb6fd7859b82adeaade10c2d32dafe5f9/mujoco-3.9.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aa860cf246b0bf340e5469f54d48b4adb40c191e1c239341783b8935bebd1853", size = 7392326, upload-time = "2026-05-27T14:49:44.96Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/fb/690f5b7a2a8f794dea942120f4a794ec3167d1ab4ffd2791d45d6fd284cc/mujoco-3.9.0-cp314-cp314-win_amd64.whl", hash = "sha256:ff40abf8d5154fd847d610176dd3a7edd6f3e7392f957151fb0f0f4e8c20e771", size = 6313119, upload-time = "2026-05-27T14:49:46.831Z" },
-]
-
-[[package]]
-name = "mujoco-lidar"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "matplotlib" },
-    { name = "mujoco" },
-    { name = "numpy" },
-    { name = "pynput" },
-    { name = "scipy" },
-    { name = "zhplot" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/0d/4dfe0cacb6fe52b9b84553d437274fb6222c5d359e3fe85a6e736ff39362/mujoco_lidar-0.3.0.tar.gz", hash = "sha256:8c1970dfcbbacc8c1f3e5371a18d19e75227174f17cc10184a94d999acc07e46", size = 39301445, upload-time = "2026-03-19T05:55:38.706Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/e1/c32d6f7bf7fbc3f3c05629f8624c6eab81bfef36d1d3e8c3b23ef52da9aa/mujoco_lidar-0.3.0-py3-none-any.whl", hash = "sha256:9ef8f556b6cd1780d93a3ca5caa84b80298e0dbfc26adee3a32c5109ccff2104", size = 39299368, upload-time = "2026-03-19T05:55:13.716Z" },
 ]
 
 [[package]]
@@ -952,8 +908,6 @@ dependencies = [
     { name = "kiwisolver" },
     { name = "matplotlib" },
     { name = "ml-dtypes" },
-    { name = "mujoco" },
-    { name = "mujoco-lidar" },
     { name = "numpy" },
     { name = "nvidia-cublas-cu12" },
     { name = "nvidia-cuda-cccl-cu12" },
@@ -1008,8 +962,6 @@ requires-dist = [
     { name = "kiwisolver", specifier = "==1.5.0" },
     { name = "matplotlib", specifier = "==3.10.9" },
     { name = "ml-dtypes", specifier = "==0.5.4" },
-    { name = "mujoco", specifier = "==3.9.0" },
-    { name = "mujoco-lidar", specifier = "==0.3.0" },
     { name = "numpy", specifier = "==2.4.6" },
     { name = "nvidia-cublas-cu12", specifier = "==12.9.2.10" },
     { name = "nvidia-cuda-cccl-cu12", specifier = "==12.9.27" },
