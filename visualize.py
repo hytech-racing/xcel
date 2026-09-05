@@ -2,6 +2,7 @@
 import math
 
 import numpy as np
+import mujoco
 import rerun as rr
 import rerun.blueprint as rrb
 
@@ -47,6 +48,92 @@ def setup_static(world: World) -> None:
     rr.log("scalars/speed", rr.SeriesLines(colors=[[0, 220, 220]], names=["speed"]), static=True)
     rr.log("scalars/yaw_rate", rr.SeriesLines(colors=[[220, 100, 220]], names=["yaw_rate"]), static=True)
     rr.log("scalars/slip", rr.SeriesLines(colors=[[255, 140, 0]], names=["slip"]), static=True)
+
+def _planner_arc_points(arc, count: int = 64) -> np.ndarray:
+    begin = np.array([arc.begin.x_map_m, arc.begin.y_map_m], dtype=np.float64)
+    end = np.array([arc.end.x_map_m, arc.end.y_map_m], dtype=np.float64)
+    chord = end - begin
+    chord_length = float(np.linalg.norm(chord))
+    curvature = float(arc.signed_curvature_inv_m)
+    if chord_length < 1e-9:
+        return np.empty((0, 3), dtype=np.float32)
+    if abs(curvature) < 1e-9:
+        xy = np.linspace(begin, end, count)
+    else:
+        radius = 1.0 / abs(curvature)
+        half_chord = 0.5 * chord_length
+        if half_chord > radius:
+            xy = np.linspace(begin, end, count)
+        else:
+            midpoint = 0.5 * (begin + end)
+            left_normal = np.array([-chord[1], chord[0]]) / chord_length
+            center = midpoint + math.copysign(
+                math.sqrt(max(0.0, radius * radius - half_chord * half_chord)),
+                curvature,
+            ) * left_normal
+            start_angle = math.atan2(begin[1] - center[1], begin[0] - center[0])
+            end_angle = math.atan2(end[1] - center[1], end[0] - center[0])
+            delta = (end_angle - start_angle + math.pi) % (2.0 * math.pi) - math.pi
+            angles = start_angle + np.linspace(0.0, delta, count)
+            xy = center + radius * np.column_stack((np.cos(angles), np.sin(angles)))
+    return np.column_stack((xy, np.full(len(xy), 0.08))).astype(np.float32)
+
+def _circle_points(x: float, y: float, radius: float, count: int = 96) -> np.ndarray:
+    angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=True)
+    return np.column_stack((
+        x + radius * np.cos(angles),
+        y + radius * np.sin(angles),
+        np.full(count, 0.06),
+    )).astype(np.float32)
+
+def _add_mujoco_sphere(scene, point: np.ndarray, radius: float, color) -> None:
+    if scene.ngeom >= scene.maxgeom:
+        return
+    mujoco.mjv_initGeom(
+        scene.geoms[scene.ngeom], mujoco.mjtGeom.mjGEOM_SPHERE,
+        np.array([radius, 0.0, 0.0]), np.asarray(point, dtype=np.float64),
+        np.eye(3).reshape(-1), np.asarray(color, dtype=np.float32),
+    )
+    scene.ngeom += 1
+
+def _add_mujoco_line(scene, begin: np.ndarray, end: np.ndarray, width: float, color) -> None:
+    if scene.ngeom >= scene.maxgeom:
+        return
+    geom = scene.geoms[scene.ngeom]
+    mujoco.mjv_initGeom(
+        geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), np.zeros(3),
+        np.eye(3).reshape(-1), np.asarray(color, dtype=np.float32),
+    )
+    mujoco.mjv_connector(
+        geom, mujoco.mjtGeom.mjGEOM_LINE, width,
+        np.asarray(begin, dtype=np.float64), np.asarray(end, dtype=np.float64),
+    )
+    scene.ngeom += 1
+
+def draw_mujoco_planner(viewer, planner_visualization, x: float, y: float) -> None:
+    scene = viewer.user_scn
+    scene.ngeom = 0
+    if planner_visualization is None:
+        return
+
+    midpoints = np.array(
+        [[point.x_map_m, point.y_map_m, 0.12]
+         for point in planner_visualization.midpoints], dtype=np.float64,
+    )
+    for point in midpoints:
+        _add_mujoco_sphere(scene, point, 0.09, [1.0, 0.1, 1.0, 1.0])
+    for begin, end in zip(midpoints[:-1], midpoints[1:]):
+        _add_mujoco_line(scene, begin, end, 4.0, [1.0, 0.1, 1.0, 1.0])
+
+    arc = _planner_arc_points(planner_visualization.planner_arc)
+    for begin, end in zip(arc[:-1], arc[1:]):
+        _add_mujoco_line(scene, begin, end, 5.0, [0.1, 0.9, 1.0, 1.0])
+
+    lookahead = float(planner_visualization.lookahead_distance_m)
+    if lookahead > 0.0:
+        circle = _circle_points(x, y, lookahead)
+        for begin, end in zip(circle[:-1], circle[1:]):
+            _add_mujoco_line(scene, begin, end, 3.0, [1.0, 1.0, 1.0, 1.0])
 
 def log_frame(
     *,
