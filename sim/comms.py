@@ -45,6 +45,7 @@ class SimComms:
         self._lidar.setsockopt(zmq.SNDHWM, 1)
 
         self._latest_input: VehicleInput = VehicleInput()
+        self._planner_visualization = None
         self._last_cmd_time: float = time.monotonic()
 
     def drain_commands(self) -> None:
@@ -70,6 +71,11 @@ class SimComms:
             msg = self._can.hytech_pb2.drivebrain_steering_input()
             msg.ParseFromString(body)
             self._latest_input.wheel_steer_rad = math.radians(msg.drivebrain_steering)
+        elif type_name == "hytech_msgs.PlannerVisualization":
+            msg = self._proto.autonomy_msgs_pb2.PlannerVisualization()
+            msg.ParseFromString(body)
+            self._planner_visualization = msg
+            return
         else:
             return
 
@@ -83,6 +89,9 @@ class SimComms:
         if self.timed_out():
             return VehicleInput(wheel_steer_rad=self._latest_input.wheel_steer_rad)
         return self._latest_input
+
+    def planner_visualization(self):
+        return self._planner_visualization
 
     def _send_typed(self, msg) -> None:
         """Multipart (type name, body) frame"""

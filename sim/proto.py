@@ -16,7 +16,8 @@ import types
 import urllib.request
 from pathlib import Path
 
-GITHUB_API_URL = "https://api.github.com/repos/hytech-racing/HT_proto/releases/latest"
+HT_PROTO_TAG = "2026_09_04_PRE_RELEASE"
+GITHUB_API_URL = f"https://api.github.com/repos/hytech-racing/HT_proto/releases/tags/{HT_PROTO_TAG}"
 ASSET_NAME = "python_hytech_msgs_proto_lib.tar.gz"
 CACHE_DIR = Path.home() / ".cache" / "hytech_proto"
 
@@ -108,6 +109,7 @@ def load_proto() -> types.ModuleType:
     mod.hytech_msgs_pb2 = importlib.import_module("hytech_msgs_pb2")
     mod.base_msgs_pb2 = importlib.import_module("base_msgs_pb2")
     mod.dv_msgs_pb2 = importlib.import_module("dv_msgs_pb2")
+    mod.autonomy_msgs_pb2 = importlib.import_module("autonomy_msgs_pb2")
     return mod
 
 def load_can(tag: int) -> types.ModuleType:

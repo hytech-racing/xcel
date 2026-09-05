@@ -125,6 +125,9 @@ def main():
 
         if step_i % vis_rate == 0:
             if viewer is not None:
+                visualize.draw_mujoco_planner(
+                    viewer, comms.planner_visualization(), x_i, y_i
+                )
                 viewer.sync()
             if not args.logless:
                 visualize.log_frame(
