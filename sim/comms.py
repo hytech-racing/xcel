@@ -5,13 +5,20 @@ import types
 import numpy as np
 import zmq
 
+import os
+
 from foxglove_schemas_protobuf.FrameTransform_pb2 import FrameTransform
 from foxglove_schemas_protobuf.PackedElementField_pb2 import PackedElementField
 from foxglove_schemas_protobuf.PointCloud_pb2 import PointCloud
 
 from .vehicle import VehicleInput, VehicleState, INPUT_SIZE
 
-ZMQ_PREFIX: str = "ipc:///tmp/drivebrain_sim_"
+SIM_BIND_HOST: str = os.environ.get("SIM_BIND_HOST", "127.0.0.1")
+
+def _endpoint(port: int) -> str:
+    return f"tcp://{SIM_BIND_HOST}:{port}"
+
+ZMQ_PREFIX: str = "tcp:///tmp/drivebrain_sim_"
 SEND_SOCKET_PORT: int = 6767
 RECV_SOCKET_PORT: int = 5940
 LIDAR_SOCKET_PORT: int = 1155
@@ -32,21 +39,21 @@ class SimComms:
         # 1000-deep default queue, which is exactly how a backlog builds.
         self._cmd: zmq.Socket = self._ctx.socket(zmq.PULL)
         self._cmd.setsockopt(zmq.RCVHWM, 1)
-        self._cmd.bind(f"{ZMQ_PREFIX}{RECV_SOCKET_PORT}")
+        self._cmd.bind(_endpoint(RECV_SOCKET_PORT))
 
         # multipart channel. carries all low-rate ground-truth data (pose, cones, transforms).
         # multipart rules out CONFLATE, so keep the queue shallow to bound transform staleness.
         self._state: zmq.Socket = self._ctx.socket(zmq.PUSH)
         self._state.setsockopt(zmq.SNDHWM, 4)
         self._state.setsockopt(zmq.LINGER, 0)
-        self._state.bind(f"{ZMQ_PREFIX}{SEND_SOCKET_PORT}")
+        self._state.bind(_endpoint(SEND_SOCKET_PORT))
 
         # lidar is single-part and only-latest-matters -> CONFLATE keeps just the newest
         # scan queued, so a slow Foxglove/bridge can never accumulate stale clouds.
         self._lidar: zmq.Socket = self._ctx.socket(zmq.PUSH)
         self._lidar.setsockopt(zmq.CONFLATE, 1)
         self._lidar.setsockopt(zmq.LINGER, 0)
-        self._lidar.bind(f"{ZMQ_PREFIX}{LIDAR_SOCKET_PORT}")
+        self._lidar.bind(_endpoint(LIDAR_SOCKET_PORT))
 
         self._latest_input: VehicleInput = VehicleInput()
         self._last_cmd_time: float = time.monotonic()
