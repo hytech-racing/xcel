@@ -113,6 +113,14 @@ class SimComms:
         msg.orientation.w = math.cos(psi * 0.5)
         self._send_typed(msg)
 
+    def send_velocity(self, vx_world: float, vy_world: float) -> None:
+        """Send ground-truth map-frame velocity to drivebrain's VNData input."""
+        msg = self._proto.hytech_msgs_pb2.VNData()
+        msg.vn_vel_m_s.x = vx_world
+        msg.vn_vel_m_s.y = vy_world
+        msg.vn_vel_m_s.z = 0.0
+        self._send_typed(msg)
+
     def send_pointcloud(self, pts: np.ndarray) -> None:
         n: int = len(pts)
         buf = np.empty(n, dtype=POINT_DTYPE)

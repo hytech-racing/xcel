@@ -22,6 +22,7 @@ from sim.proto import load_can, load_proto
 
 LIDAR_HZ: float = 10.0
 VIS_HZ: float = 60.0
+VELOCITY_HZ: float = 50.0
 CONES_HZ: float = 1.0  # static ground truth map
 CAN_TAG: int = 268  # must match the HT_CAN release drivebrain is built against
 
@@ -38,6 +39,7 @@ def main():
 
     vis_rate: int = max(1, round(1.0 / (VIS_HZ * dt)))
     lidar_rate: int = max(1, round(1.0 / (LIDAR_HZ * dt)))
+    velocity_rate: int = max(1, round(1.0 / (VELOCITY_HZ * dt)))
     cones_rate: int = max(1, round(1.0 / (CONES_HZ * dt)))
 
     s0 = dynamics.state()
@@ -93,6 +95,9 @@ def main():
         x_i: float = float(state[X])
         y_i: float = float(state[Y])
         psi_i: float = float(state[PSI])
+
+        if step_i % velocity_rate == 0:
+            comms.send_velocity(float(state[VX]), float(state[VY]))
 
         # comms.send_state(derive_vehicle_state(state, u, params))  # raw packed struct replaced by typed GT messages below
 
