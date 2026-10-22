@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import jax
 from .dynamics import VehicleParams, xdot, X, Y, PSI, VX, VY, OMEGA
 
-_INPUT_FMT: str = "5d"
+_INPUT_FMT: str = "9d"
 _STATE_FMT: str = "9d"
 
 INPUT_SIZE: int = struct.calcsize(_INPUT_FMT)
@@ -12,17 +12,23 @@ STATE_SIZE: int = struct.calcsize(_STATE_FMT)
 
 @dataclass
 class VehicleInput:
-    torque_fl: float = 0.0
-    torque_fr: float = 0.0
-    torque_rl: float = 0.0
-    torque_rr: float = 0.0
+    rpm_fl: float = 0.0
+    rpm_fr: float = 0.0
+    rpm_rl: float = 0.0
+    rpm_rr: float = 0.0
+    torque_lim_fl: float = 0.0
+    torque_lim_fr: float = 0.0
+    torque_lim_rl: float = 0.0
+    torque_lim_rr: float = 0.0
     wheel_steer_rad: float = 0.0
 
     def pack(self) -> bytes:
         return struct.pack(
             _INPUT_FMT,
-            self.torque_fl, self.torque_fr,
-            self.torque_rl, self.torque_rr,
+            self.rpm_fl, self.rpm_fr,
+            self.rpm_rl, self.rpm_rr,
+            self.torque_lim_fl, self.torque_lim_fr,
+            self.torque_lim_rl, self.torque_lim_rr,
             self.wheel_steer_rad,
         )
 

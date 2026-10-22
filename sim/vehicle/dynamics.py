@@ -13,11 +13,17 @@ vx, vy: CG velocity in world frame (m/s)
 omega: Yaw rate (rad/s)
 omega_fl..rr: Wheel angular velocities (rad/s)
 
-Input vector (5 x 1):
-[tau_fl, tau_fr, tau_rl, tau_rr, delta]
+Input vector (9 x 1):
+[rpm_fl, rpm_fr, rpm_rl, rpm_rr, lim_fl, lim_fr, lim_rl, lim_rr, delta]
 
-tau_fl..rr: Motor torques (Nm)
+rpm_fl..rr: Motor speed setpoints (rpm)
+lim_fl..rr: Motor torque limits (Nm, sign ignored)
 delta: Front wheel steering angle (rad)
+
+The inverters run in speed mode like on the car: each motor's torque is a P speed
+loop clipped to +/- its torque limit. Requesting MAX_RPM (or 0 / -MAX_RPM) saturates
+the loop, so the limit becomes the applied torque -- the same trick drivebrain uses
+to get torque control through speed mode.
 """
 
 import jax
@@ -43,12 +49,18 @@ class VehicleParams(NamedTuple):
     v_sld_min: float = 0.02
     c_rr: float = 0.015
     w_rr_eps: float = 0.1
+    speed_kp: float = 0.02  # inverter speed loop gain (Nm/rpm)
 
 X, Y, PSI, VX, VY, OMEGA, W_FL, W_FR, W_RL, W_RR = range(10)
 """Numerical indicies for the vehicle state JAX array"""
 
-TAU_FL, TAU_FR, TAU_RL, TAU_RR, DELTA = range(5)
+RPM_FL, RPM_FR, RPM_RL, RPM_RR, LIM_FL, LIM_FR, LIM_RL, LIM_RR, DELTA = range(9)
 """Numerical indicies for the vehicle input JAX array"""
+
+MAX_RPM: float = 20000.0
+"""Speed setpoint drivebrain sends to saturate the speed loop into pure torque control"""
+
+RAD_S_TO_RPM: float = 60.0 / (2.0 * jnp.pi)
 
 def _tire_friction(
     v_slip: jax.Array,
@@ -78,12 +90,20 @@ def state(
     return jnp.array([x, y, psi, vx, vy, omega, w_fl, w_fr, w_rl, w_rr])
 
 def input(
-    tau_fl: float = 0., tau_fr: float = 0.,
-    tau_rl: float = 0., tau_rr: float = 0.,
+    rpm_fl: float = 0., rpm_fr: float = 0.,
+    rpm_rl: float = 0., rpm_rr: float = 0.,
+    lim_fl: float = 0., lim_fr: float = 0.,
+    lim_rl: float = 0., lim_rr: float = 0.,
     steer: float = 0.,
 ) -> jax.Array:
     """Returns a JAX array of a vehicle input"""
-    return jnp.array([tau_fl, tau_fr, tau_rl, tau_rr, steer])
+    return jnp.array([rpm_fl, rpm_fr, rpm_rl, rpm_rr, lim_fl, lim_fr, lim_rl, lim_rr, steer])
+
+def motor_torque(state: jax.Array, u: jax.Array, params: VehicleParams) -> jax.Array:
+    """Motor torques (Nm) from the inverter speed loop, clipped to the torque limits"""
+    rpm: jax.Array = state[W_FL:W_RR + 1] * params.gear_ratio * RAD_S_TO_RPM
+    lim: jax.Array = jnp.abs(u[LIM_FL:LIM_RR + 1])
+    return jnp.clip(params.speed_kp * (u[RPM_FL:RPM_RR + 1] - rpm), -lim, lim)
 
 @jax.jit
 def xdot(state: jax.Array, u: jax.Array, params: VehicleParams) -> jax.Array:
@@ -97,7 +117,7 @@ def xdot(state: jax.Array, u: jax.Array, params: VehicleParams) -> jax.Array:
     omega: jax.Array = state[OMEGA]
     w: jax.Array = state[6:10]
 
-    tau_drive: jax.Array = u[:4] * p.gear_ratio
+    tau_drive: jax.Array = motor_torque(state, u, p) * p.gear_ratio
     delta: jax.Array = u[DELTA]
 
     c_psi: jax.Array = jnp.cos(psi)
@@ -155,14 +175,22 @@ def xdot(state: jax.Array, u: jax.Array, params: VehicleParams) -> jax.Array:
         w_dot[2], w_dot[3],
     ])
 
-@jax.jit
-def step_rk4(state: jax.Array, u: jax.Array, params: VehicleParams, dt: float) -> jax.Array:
-    """Single RK4 step with zero-order hold on input"""
+RK4_SUBSTEPS: int = 16
+"""The tire model is very stiff near standstill. Without substeps the speed loop chatters
+there and a 0 rpm request stalls the car at ~0.5 m/s instead of stopping it"""
+
+def _rk4(state: jax.Array, u: jax.Array, params: VehicleParams, dt: float) -> jax.Array:
     k1: jax.Array = xdot(state, u, params)
     k2: jax.Array = xdot(state + 0.5 * dt * k1, u, params)
     k3: jax.Array = xdot(state + 0.5 * dt * k2, u, params)
     k4: jax.Array = xdot(state + dt * k3, u, params)
     return state + (dt / 6.0) * (k1 + 2.0*k2 + 2.0*k3 + k4)
+
+@jax.jit
+def step_rk4(state: jax.Array, u: jax.Array, params: VehicleParams, dt: float) -> jax.Array:
+    """Advance dt with RK4_SUBSTEPS RK4 substeps, zero-order hold on input"""
+    h: float = dt / RK4_SUBSTEPS
+    return jax.lax.fori_loop(0, RK4_SUBSTEPS, lambda _, s: _rk4(s, u, params, h), state)
 
 
 def slip_angle(s: jax.Array) -> jax.Array:

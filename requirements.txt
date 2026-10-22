@@ -14,8 +14,6 @@ jaxlib==0.10.1
 kiwisolver==1.5.0
 matplotlib==3.10.9
 ml_dtypes==0.5.4
-mujoco==3.9.0
-mujoco_lidar==0.3.0
 numpy==2.4.6
 nvidia-cublas-cu12==12.9.2.10
 nvidia-cuda-cccl-cu12==12.9.27
