@@ -12,6 +12,7 @@ from foxglove_schemas_protobuf.PackedElementField_pb2 import PackedElementField
 from foxglove_schemas_protobuf.PointCloud_pb2 import PointCloud
 
 from .vehicle import VehicleInput, VehicleState, INPUT_SIZE
+from .vehicle.dynamics import MAX_RPM
 
 SIM_BIND_HOST: str = os.environ.get("SIM_BIND_HOST", "127.0.0.1")
 
@@ -28,6 +29,18 @@ INPUT_TIMEOUT: float = 1.0 # secs
 POINT_DTYPE = np.dtype([('x', '<f4'), ('y', '<f4'), ('z', '<f4')])
 POINT_STRIDE: int = POINT_DTYPE.itemsize  # 12
 
+# Steering calibration, mirrored from drivebrain's estimation::SteeringEstimator.
+# drivebrain maps wheel angle -> analog -> column angle; we invert that chain.
+STEER_ANALOG: np.ndarray = np.array([1164.0, 2059.0, 2960.0])
+STEER_WHEEL_DEG: np.ndarray = np.array([20.11, 0.0, -20.86])
+COLUMN_OFFSET: float = 2092.0
+COLUMN_SCALING: float = -0.09641
+
+def column_deg_to_wheel_rad(column_deg: float) -> float:
+    """Steering column angle (deg) -> front wheel angle (rad). Clamps at the table ends like drivebrain"""
+    analog: float = column_deg / COLUMN_SCALING + COLUMN_OFFSET
+    return math.radians(float(np.interp(analog, STEER_ANALOG, STEER_WHEEL_DEG)))
+
 class SimComms:
     def __init__(self, proto: types.ModuleType, can: types.ModuleType) -> None:
         self._proto = proto
@@ -43,8 +56,9 @@ class SimComms:
 
         # multipart channel. carries all low-rate ground-truth data (pose, cones, transforms).
         # multipart rules out CONFLATE, so keep the queue shallow to bound transform staleness.
+        # velocity, pose and transform go out every step, so 3 = at most one step of backlog.
         self._state: zmq.Socket = self._ctx.socket(zmq.PUSH)
-        self._state.setsockopt(zmq.SNDHWM, 4)
+        self._state.setsockopt(zmq.SNDHWM, 3)
         self._state.setsockopt(zmq.LINGER, 0)
         self._state.bind(_endpoint(SEND_SOCKET_PORT))
 
@@ -70,17 +84,33 @@ class SimComms:
 
     def _handle_command(self, type_name: str, body: bytes) -> None:
         """Unpack a drivebrain CAN command into the latest vehicle input."""
-        if type_name == "hytech.drivebrain_desired_torque_input":
+        inp: VehicleInput = self._latest_input
+        if type_name == "hytech.drivebrain_speed_set_input":
+            msg = self._can.hytech_pb2.drivebrain_speed_set_input()
+            msg.ParseFromString(body)
+            inp.rpm_fl = msg.drivebrain_set_rpm_fl
+            inp.rpm_fr = msg.drivebrain_set_rpm_fr
+            inp.rpm_rl = msg.drivebrain_set_rpm_rl
+            inp.rpm_rr = msg.drivebrain_set_rpm_rr
+        elif type_name == "hytech.drivebrain_torque_lim_input":
+            msg = self._can.hytech_pb2.drivebrain_torque_lim_input()
+            msg.ParseFromString(body)
+            inp.torque_lim_fl = msg.drivebrain_torque_fl
+            inp.torque_lim_fr = msg.drivebrain_torque_fr
+            inp.torque_lim_rl = msg.drivebrain_torque_rl
+            inp.torque_lim_rr = msg.drivebrain_torque_rr
+        elif type_name == "hytech.drivebrain_desired_torque_input":
+            # legacy torque mode (e.g. teleop): express it as a saturated speed request
             msg = self._can.hytech_pb2.drivebrain_desired_torque_input()
             msg.ParseFromString(body)
-            self._latest_input.torque_fl = msg.drivebrain_torque_fl
-            self._latest_input.torque_fr = msg.drivebrain_torque_fr
-            self._latest_input.torque_rl = msg.drivebrain_torque_rl
-            self._latest_input.torque_rr = msg.drivebrain_torque_rr
+            torques = (msg.drivebrain_torque_fl, msg.drivebrain_torque_fr,
+                       msg.drivebrain_torque_rl, msg.drivebrain_torque_rr)
+            inp.rpm_fl, inp.rpm_fr, inp.rpm_rl, inp.rpm_rr = (math.copysign(MAX_RPM, t) for t in torques)
+            inp.torque_lim_fl, inp.torque_lim_fr, inp.torque_lim_rl, inp.torque_lim_rr = (abs(t) for t in torques)
         elif type_name == "hytech.drivebrain_steering_input":
             msg = self._can.hytech_pb2.drivebrain_steering_input()
             msg.ParseFromString(body)
-            self._latest_input.wheel_steer_rad = math.radians(msg.drivebrain_steering)
+            inp.wheel_steer_rad = column_deg_to_wheel_rad(msg.drivebrain_steering)
         else:
             return
 
@@ -90,7 +120,7 @@ class SimComms:
         return time.monotonic() - self._last_cmd_time > INPUT_TIMEOUT
 
     def current_input(self) -> VehicleInput:
-        """Return the latest input, zeroing torques if the controller timed out."""
+        """Return the latest input, zeroing torque limits (coasting) if the controller timed out."""
         if self.timed_out():
             return VehicleInput(wheel_steer_rad=self._latest_input.wheel_steer_rad)
         return self._latest_input

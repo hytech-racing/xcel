@@ -10,7 +10,7 @@ import rerun as rr
 from types import FrameType
 from sim.vehicle import dynamics
 from sim.vehicle.dynamics import (
-    VehicleParams, step_rk4,
+    VehicleParams, step_rk4, motor_torque,
     X, Y, PSI, VX, VY, OMEGA, slip_angle,
 )
 from sim.vehicle.state import derive_vehicle_state
@@ -83,8 +83,10 @@ def main():
         cmd = comms.current_input()
 
         u: jax.Array = dynamics.input(
-            tau_fl=cmd.torque_fl, tau_fr=cmd.torque_fr,
-            tau_rl=cmd.torque_rl, tau_rr=cmd.torque_rr,
+            rpm_fl=cmd.rpm_fl, rpm_fr=cmd.rpm_fr,
+            rpm_rl=cmd.rpm_rl, rpm_rr=cmd.rpm_rr,
+            lim_fl=cmd.torque_lim_fl, lim_fr=cmd.torque_lim_fr,
+            lim_rl=cmd.torque_lim_rl, lim_rr=cmd.torque_lim_rr,
             steer=cmd.wheel_steer_rad,
         )
 
@@ -96,21 +98,20 @@ def main():
         y_i: float = float(state[Y])
         psi_i: float = float(state[PSI])
 
-        if step_i % velocity_rate == 0:
-            comms.send_velocity(float(state[VX]), float(state[VY]))
+        comms.send_velocity(float(state[VX]), float(state[VY]))
+        comms.send_pose(x_i, y_i, psi_i)
+        comms.send_transform(
+            x_i + MOUNT_FWD * math.cos(psi_i),
+            y_i + MOUNT_FWD * math.sin(psi_i),
+            SENSOR_Z,
+            psi_i,
+        )
 
         # comms.send_state(derive_vehicle_state(state, u, params))  # raw packed struct replaced by typed GT messages below
 
         if step_i % lidar_rate == 0:
             latest_pts = lidar.scan((x_i, y_i, psi_i))
             comms.send_pointcloud(latest_pts)
-            comms.send_pose(x_i, y_i, psi_i)
-            comms.send_transform(
-                x_i + MOUNT_FWD * math.cos(psi_i),
-                y_i + MOUNT_FWD * math.sin(psi_i),
-                SENSOR_Z,
-                psi_i,
-            )
             if not args.logless:
                 rr.set_time("sim_time", duration=sim_t)
                 render.log_points(latest_pts)
@@ -121,12 +122,13 @@ def main():
         if step_i % vis_rate == 0 and not args.logless:
             rr.set_time("sim_time", duration=sim_t)
             render.log_car(x_i, y_i, psi_i, comms.timed_out())
+            tau_fl, tau_fr, tau_rl, tau_rr = (float(t) for t in motor_torque(state, u, params))
             visualize.log_scalars(
                 speed=math.hypot(float(state[VX]), float(state[VY])),
                 yaw_rate=float(state[OMEGA]),
                 slip=float(slip_angle(state)),
-                torque_fl=cmd.torque_fl, torque_fr=cmd.torque_fr,
-                torque_rl=cmd.torque_rl, torque_rr=cmd.torque_rr,
+                torque_fl=tau_fl, torque_fr=tau_fr,
+                torque_rl=tau_rl, torque_rr=tau_rr,
                 steering=cmd.wheel_steer_rad,
             )
 
