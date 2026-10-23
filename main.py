@@ -11,16 +11,20 @@ from types import FrameType
 from sim.vehicle import dynamics
 from sim.vehicle.dynamics import (
     VehicleParams, step_rk4,
-    X, Y, PSI, VX, VY, OMEGA, slip_angle,
+    X, Y, PSI, VX, VY, OMEGA, W_FL, W_RR, slip_angle,
 )
 from sim.vehicle.state import derive_vehicle_state
+from sim.vehicle.inverter import SpeedController
 from sim.comms import SimComms
 from sim.scene import load_scene, MOUNT_FWD, SENSOR_Z
 from sim.lidar import LidarSensor
 from sim import render
 from sim.proto import load_can, load_proto
+from sim.sensors import GroundSpeedSensor, GssConfig
 
 LIDAR_HZ: float = 10.0
+GSS_HZ: float = 250.0
+GSS_POS_X_M: float = -1.108  # sensor mount behind base_link, matches drivebrain's Odometry/oms_position_base_x_m
 VIS_HZ: float = 60.0
 CONES_HZ: float = 1.0  # static ground truth map
 CAN_TAG: int = 268  # must match the HT_CAN release drivebrain is built against
@@ -39,6 +43,7 @@ def main():
     vis_rate: int = max(1, round(1.0 / (VIS_HZ * dt)))
     lidar_rate: int = max(1, round(1.0 / (LIDAR_HZ * dt)))
     cones_rate: int = max(1, round(1.0 / (CONES_HZ * dt)))
+    gss_rate: int = max(1, round(1.0 / (GSS_HZ * dt)))
 
     s0 = dynamics.state()
     u0 = dynamics.input()
@@ -46,6 +51,7 @@ def main():
 
     scene = load_scene(args.track)
     lidar: LidarSensor = LidarSensor(scene)
+    gss: GroundSpeedSensor = GroundSpeedSensor(GssConfig(rate_hz=GSS_HZ))
     proto = load_proto()
     can = load_can(CAN_TAG)
 
@@ -54,6 +60,7 @@ def main():
 
     x0, y0, psi0 = [float(v) for v in scene.start_pose]
     state = dynamics.state(x=x0, y=y0, psi=psi0)
+    inverters: SpeedController = SpeedController(params.gear_ratio, dt)
 
     if not args.logless:
         rr.init("vehicle_sim", spawn=True)
@@ -80,9 +87,12 @@ def main():
         comms.drain_commands()
         cmd = comms.current_input()
 
+        wheel_omega: np.ndarray = np.asarray(state[W_FL:W_RR + 1])
+        tau: np.ndarray = inverters.update(wheel_omega, cmd.speed_rpm, cmd.torque_lim)
+
         u: jax.Array = dynamics.input(
-            tau_fl=cmd.torque_fl, tau_fr=cmd.torque_fr,
-            tau_rl=cmd.torque_rl, tau_rr=cmd.torque_rr,
+            tau_fl=tau[0], tau_fr=tau[1],
+            tau_rl=tau[2], tau_rr=tau[3],
             steer=cmd.wheel_steer_rad,
         )
 
@@ -120,10 +130,18 @@ def main():
                 speed=math.hypot(float(state[VX]), float(state[VY])),
                 yaw_rate=float(state[OMEGA]),
                 slip=float(slip_angle(state)),
-                torque_fl=cmd.torque_fl, torque_fr=cmd.torque_fr,
-                torque_rl=cmd.torque_rl, torque_rr=cmd.torque_rr,
+                torque_fl=float(tau[0]), torque_fr=float(tau[1]),
+                torque_rl=float(tau[2]), torque_rr=float(tau[3]),
                 steering=cmd.wheel_steer_rad,
             )
+
+        if step_i % gss_rate == 0:
+            c, s = math.cos(psi_i), math.sin(psi_i)
+            vx_w, vy_w, omega = float(state[VX]), float(state[VY]), float(state[OMEGA])
+            # velocity at the sensor mount: v_sensor = v_base + w x r
+            meas = gss.measure(c * vx_w + s * vy_w, -s * vx_w + c * vy_w + omega * GSS_POS_X_M)
+            if meas is not None:
+                comms.send_oms(*meas, omega)
 
         drift: float = (wall_start + sim_t) - time.perf_counter()
         if drift > 0:

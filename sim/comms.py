@@ -28,6 +28,10 @@ INPUT_TIMEOUT: float = 1.0 # secs
 POINT_DTYPE = np.dtype([('x', '<f4'), ('y', '<f4'), ('z', '<f4')])
 POINT_STRIDE: int = POINT_DTYPE.itemsize  # 12
 
+def _all_finite(msg) -> bool:
+    """A single NaN/inf input poisons the integrator and RK4 state for the rest of the run"""
+    return all(math.isfinite(v) for _, v in msg.ListFields())
+
 class SimComms:
     def __init__(self, proto: types.ModuleType, can: types.ModuleType) -> None:
         self._proto = proto
@@ -57,6 +61,7 @@ class SimComms:
 
         self._latest_input: VehicleInput = VehicleInput()
         self._last_cmd_time: float = time.monotonic()
+        self._start_time: float = time.monotonic()
 
     def drain_commands(self) -> None:
         while True:
@@ -70,16 +75,29 @@ class SimComms:
 
     def _handle_command(self, type_name: str, body: bytes) -> None:
         """Unpack a drivebrain CAN command into the latest vehicle input."""
-        if type_name == "hytech.drivebrain_desired_torque_input":
-            msg = self._can.hytech_pb2.drivebrain_desired_torque_input()
+        if type_name == "hytech.drivebrain_speed_set_input":
+            msg = self._can.hytech_pb2.drivebrain_speed_set_input()
             msg.ParseFromString(body)
-            self._latest_input.torque_fl = msg.drivebrain_torque_fl
-            self._latest_input.torque_fr = msg.drivebrain_torque_fr
-            self._latest_input.torque_rl = msg.drivebrain_torque_rl
-            self._latest_input.torque_rr = msg.drivebrain_torque_rr
+            if not _all_finite(msg):
+                return
+            self._latest_input.speed_rpm_fl = msg.drivebrain_set_rpm_fl
+            self._latest_input.speed_rpm_fr = msg.drivebrain_set_rpm_fr
+            self._latest_input.speed_rpm_rl = msg.drivebrain_set_rpm_rl
+            self._latest_input.speed_rpm_rr = msg.drivebrain_set_rpm_rr
+        elif type_name == "hytech.drivebrain_torque_lim_input":
+            msg = self._can.hytech_pb2.drivebrain_torque_lim_input()
+            msg.ParseFromString(body)
+            if not _all_finite(msg):
+                return
+            self._latest_input.torque_lim_fl = msg.drivebrain_torque_fl
+            self._latest_input.torque_lim_fr = msg.drivebrain_torque_fr
+            self._latest_input.torque_lim_rl = msg.drivebrain_torque_rl
+            self._latest_input.torque_lim_rr = msg.drivebrain_torque_rr
         elif type_name == "hytech.drivebrain_steering_input":
             msg = self._can.hytech_pb2.drivebrain_steering_input()
             msg.ParseFromString(body)
+            if not _all_finite(msg):
+                return
             self._latest_input.wheel_steer_rad = math.radians(msg.drivebrain_steering)
         else:
             return
@@ -90,7 +108,7 @@ class SimComms:
         return time.monotonic() - self._last_cmd_time > INPUT_TIMEOUT
 
     def current_input(self) -> VehicleInput:
-        """Return the latest input, zeroing torques if the controller timed out."""
+        """Return the latest input, zeroing setpoints and torque limits if the controller timed out."""
         if self.timed_out():
             return VehicleInput(wheel_steer_rad=self._latest_input.wheel_steer_rad)
         return self._latest_input
@@ -146,6 +164,27 @@ class SimComms:
             cone.position.x = float(x)
             cone.position.y = float(y)
             cone.color = int(c)
+        self._send_typed(msg)
+
+    def send_oms(self, vx: float, vy: float, yaw_rate: float) -> None:
+        """Ground speed sensor measurement as hytech_msgs.OMSData. vx, vy are the velocity at the
+        sensor mount in body frame (FLU, m/s), yaw_rate in rad/s."""
+        msg = self._proto.hytech_msgs_pb2.OMSData()
+        # sensor-local clock like the real unit; drivebrain maps it onto host time itself.
+        # relative to start since the field is a float32
+        msg.sample_time_s = time.monotonic() - self._start_time
+        # the real sensor is mounted facing backwards and drivebrain's Odometry negates
+        # vel_x/vel_y to undo it, so report in the sensor's own (rear-facing) frame
+        msg.motion.vel_x_kmh = -vx * 3.6
+        msg.motion.vel_y_kmh = -vy * 3.6
+        msg.motion.vel_a_kmh = math.hypot(vx, vy) * 3.6
+        msg.motion.ang_s_deg = math.degrees(math.atan2(vy, vx))
+        msg.rate_hor_deg_s.z = math.degrees(yaw_rate)
+        msg.rate_deg_s.z = msg.rate_hor_deg_s.z
+        msg.status.standstill = vx == 0.0 and vy == 0.0
+        msg.status.status_ok = True
+        msg.status.sensor_connected = True
+        msg.status.illu_ok = True
         self._send_typed(msg)
 
     def send_transform(self, x: float, y: float, z: float, psi: float) -> None:

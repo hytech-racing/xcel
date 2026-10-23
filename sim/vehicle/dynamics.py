@@ -39,10 +39,14 @@ class VehicleParams(NamedTuple):
     mu_s: float = 1.5
     s_adh: float = 0.117
     s_sld: float = 0.35
-    v_adh_min: float = 0.005
-    v_sld_min: float = 0.02
+    # Low-speed slip regularization. Must stay >~1 m/s at dt=0.004: smaller makes the tire
+    # too stiff for RK4 near standstill and the car limit-cycles instead of stopping
+    v_adh_min: float = 1.0
+    v_sld_min: float = 2.0
     c_rr: float = 0.015
     w_rr_eps: float = 0.1
+    rho: float = 1.225
+    cd_a: float = 1.2
 
 X, Y, PSI, VX, VY, OMEGA, W_FL, W_FR, W_RL, W_RR = range(10)
 """Numerical indicies for the vehicle state JAX array"""
@@ -97,7 +101,12 @@ def xdot(state: jax.Array, u: jax.Array, params: VehicleParams) -> jax.Array:
     omega: jax.Array = state[OMEGA]
     w: jax.Array = state[6:10]
 
-    tau_drive: jax.Array = u[:4] * p.gear_ratio
+    # Negative torque only brakes: fade it out as the wheel stops so it can't spin it backwards.
+    # Ramp instead of a hard cutoff so RK4 doesn't chatter around w = 0
+    tau_cmd: jax.Array = u[:4]
+    brake_scale: jax.Array = jnp.clip(w / p.w_rr_eps, 0.0, 1.0)
+    tau: jax.Array = jnp.where(tau_cmd < 0.0, tau_cmd * brake_scale, tau_cmd)
+    tau_drive: jax.Array = tau * p.gear_ratio
     delta: jax.Array = u[DELTA]
 
     c_psi: jax.Array = jnp.cos(psi)
@@ -140,6 +149,12 @@ def xdot(state: jax.Array, u: jax.Array, params: VehicleParams) -> jax.Array:
 
     ax: jax.Array = jnp.sum(Fx) / p.m
     ay: jax.Array = jnp.sum(Fy) / p.m
+
+    # Aero drag at the CG, opposing velocity. eps keeps the sqrt gradient finite at standstill
+    v: jax.Array = jnp.sqrt(vx**2 + vy**2 + eps)
+    k_drag: jax.Array = 0.5 * p.rho * p.cd_a * v / p.m
+    ax = ax - k_drag * vx
+    ay = ay - k_drag * vy
     alpha: jax.Array = jnp.sum(r_wx * Fy - r_wy * Fx) / p.I_zz
 
     # Rolling resistance, opposing wheel rotation. tanh instead of sign RK4 agrees at standstill
