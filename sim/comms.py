@@ -56,9 +56,11 @@ class SimComms:
 
         # multipart channel. carries all low-rate ground-truth data (pose, cones, transforms).
         # multipart rules out CONFLATE, so keep the queue shallow to bound transform staleness.
-        # velocity, pose and transform go out every step, so 3 = at most one step of backlog.
+        # velocity, pose, map->lidar and odom->base_link go out every step (plus map->odom at 10 Hz)
+        # in one burst, before the I/O thread drains any of it; a limit near the burst size drops
+        # whatever is sent last. 20 = about 4 steps of backlog.
         self._state: zmq.Socket = self._ctx.socket(zmq.PUSH)
-        self._state.setsockopt(zmq.SNDHWM, 3)
+        self._state.setsockopt(zmq.SNDHWM, 20)
         self._state.setsockopt(zmq.LINGER, 0)
         self._state.bind(_endpoint(SEND_SOCKET_PORT))
 
@@ -186,9 +188,9 @@ class SimComms:
             cone.color = int(c)
         self._send_typed(msg)
 
-    def send_transform(self, x: float, y: float, z: float, psi: float) -> None:
-        """map -> lidar transform"""
-        msg = FrameTransform(parent_frame_id="map", child_frame_id="lidar")
+    def send_transform(self, parent: str, child: str, x: float, y: float, z: float, psi: float) -> None:
+        """parent -> child transform, yaw-only rotation"""
+        msg = FrameTransform(parent_frame_id=parent, child_frame_id=child)
         msg.timestamp.GetCurrentTime()
         msg.translation.x = x
         msg.translation.y = y

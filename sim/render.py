@@ -68,6 +68,15 @@ def log_car(x: float, y: float, psi: float, timed_out: bool = False) -> None:
            colors=[[100, 100, 100] if timed_out else [220, 50, 50]]))
 
 
+def log_odom_car(x: float, y: float, psi: float) -> None:
+    """Translucent box at the pose map -> odom -> base_link puts the car, to see odometry error."""
+    hpsi = 0.5 * psi
+    rr.log("world/odom_car", rr.Transform3D(translation=[x, y, CAR_Z],
+           quaternion=rr.Quaternion(xyzw=[0.0, 0.0, math.sin(hpsi), math.cos(hpsi)])))
+    rr.log("world/odom_car/body", rr.Boxes3D(half_sizes=[[1.2, 0.6, 0.2]], centers=[[0, 0, 0]],
+           colors=[[80, 160, 255, 90]]))
+
+
 def log_points(pts_local: np.ndarray) -> None:
     """Sensor-frame points; the world/car/lidar transform places them in world."""
     rr.log("world/car/lidar/points", rr.Points3D(pts_local, radii=0.03, colors=[200, 200, 200]))

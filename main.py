@@ -18,9 +18,12 @@ from sim.comms import SimComms
 from sim.scene import load_scene, MOUNT_FWD, SENSOR_Z
 from sim.lidar import LidarSensor
 from sim import render
+from sim.odom import NoisyOdometry, OdomNoise, compose
+from sim.odom_gui import OdomNoiseWindow
 from sim.proto import load_can, load_proto
 
 LIDAR_HZ: float = 10.0
+ODOM_CORRECTION_HZ: float = 10.0  # perfect map -> odom correction, standing in for SLAM
 VIS_HZ: float = 60.0
 VELOCITY_HZ: float = 50.0
 CONES_HZ: float = 1.0  # static ground truth map
@@ -29,7 +32,8 @@ CAN_TAG: int = 268  # must match the HT_CAN release drivebrain is built against
 def parse_args():
     p: argparse.ArgumentParser = argparse.ArgumentParser()
     p.add_argument("--track", default="FSG", choices=["FSG", "FSI", "skidpad", "acceleration", "thin"])
-    p.add_argument("--logless", action="store_true", help="Disable Rerun (headless)")
+    p.add_argument("--logless", action="store_true", help="Disable Rerun and the odom noise window (headless)")
+    p.add_argument("--odom-seed", type=int, default=0, help="RNG seed for odometry noise")
     return p.parse_args()
 
 def main():
@@ -41,6 +45,7 @@ def main():
     lidar_rate: int = max(1, round(1.0 / (LIDAR_HZ * dt)))
     velocity_rate: int = max(1, round(1.0 / (VELOCITY_HZ * dt)))
     cones_rate: int = max(1, round(1.0 / (CONES_HZ * dt)))
+    correction_rate: int = max(1, round(1.0 / (ODOM_CORRECTION_HZ * dt)))
 
     s0 = dynamics.state()
     u0 = dynamics.input()
@@ -62,6 +67,10 @@ def main():
         render.setup_static(scene)
         visualize.setup_series()
         rr.send_blueprint(visualize.blueprint())
+
+    odom: NoisyOdometry = NoisyOdometry(OdomNoise(), seed=args.odom_seed)
+    noise_window: OdomNoiseWindow | None = None if args.logless else OdomNoiseWindow(odom.noise)
+    map_from_odom = odom.map_from_odom(x0, y0, psi0)
 
     comms: SimComms = SimComms(proto, can)
     running: bool = True
@@ -101,11 +110,18 @@ def main():
         comms.send_velocity(float(state[VX]), float(state[VY]))
         comms.send_pose(x_i, y_i, psi_i)
         comms.send_transform(
+            "map", "lidar",
             x_i + MOUNT_FWD * math.cos(psi_i),
             y_i + MOUNT_FWD * math.sin(psi_i),
             SENSOR_Z,
             psi_i,
         )
+
+        odom.step(float(state[VX]), float(state[VY]), psi_i, float(state[OMEGA]), dt)
+        if (step_i - 1) % correction_rate == 0:
+            map_from_odom = odom.map_from_odom(x_i, y_i, psi_i)
+            comms.send_transform("map", "odom", map_from_odom[0], map_from_odom[1], 0.0, map_from_odom[2])
+        comms.send_transform("odom", "base_link", odom.x, odom.y, 0.0, odom.psi)
 
         # comms.send_state(derive_vehicle_state(state, u, params))  # raw packed struct replaced by typed GT messages below
 
@@ -122,6 +138,8 @@ def main():
         if step_i % vis_rate == 0 and not args.logless:
             rr.set_time("sim_time", duration=sim_t)
             render.log_car(x_i, y_i, psi_i, comms.timed_out())
+            render.log_odom_car(*compose(map_from_odom, odom.pose))
+            noise_window.poll()
             tau_fl, tau_fr, tau_rl, tau_rr = (float(t) for t in motor_torque(state, u, params))
             visualize.log_scalars(
                 speed=math.hypot(float(state[VX]), float(state[VY])),
